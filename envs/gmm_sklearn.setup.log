@@ -1,0 +1,39 @@
+
+=== gmm_sklearn -> ambiente 'gmm_sklearn' ===
+
+$ /Users/stefanocirillo/.local/bin/uv venv /Users/stefanocirillo/Downloads/sdg-lab/envs/gmm_sklearn 
+Using CPython [36m3.14.3[39m[36m[39m
+Creating virtual environment at: [36menvs/gmm_sklearn[39m
+Activate with: [32msource envs/gmm_sklearn/bin/activate[39m
+
+$ /Users/stefanocirillo/.local/bin/uv pip install --python /Users/stefanocirillo/Downloads/sdg-lab/envs/gmm_sklearn/bin/python pandas numpy 
+[2mUsing Python 3.14.3 environment at: envs/gmm_sklearn[0m
+[2mResolved [1m4 packages[0m [2min 449ms[0m[0m
+[36m[1mDownloading[0m[39m numpy [2m(5.2MiB)[0m
+[36m[1mDownloading[0m[39m pandas [2m(10.7MiB)[0m
+ [36m[1mDownloaded[0m[39m numpy
+ [36m[1mDownloaded[0m[39m pandas
+[2mPrepared [1m4 packages[0m [2min 578ms[0m[0m
+[2mInstalled [1m4 packages[0m [2min 34ms[0m[0m
+ [32m+[39m [1mnumpy[0m[2m==2.5.4[0m
+ [32m+[39m [1mpandas[0m[2m==3.1.0[0m
+ [32m+[39m [1mpython-dateutil[0m[2m==4.0.0[0m
+ [32m+[39m [1mtzdata[0m[2m==2026.6[0m
+
+$ /Users/stefanocirillo/.local/bin/uv pip install --python /Users/stefanocirillo/Downloads/sdg-lab/envs/gmm_sklearn/bin/python -r /Users/stefanocirillo/Downloads/sdg-lab/algorithms/gmm_sklearn/requirements.txt 
+[2mUsing Python 3.14.3 environment at: envs/gmm_sklearn[0m
+[2mResolved [1m7 packages[0m [2min 480ms[0m[0m
+[36m[1mDownloading[0m[39m scikit-learn [2m(7.9MiB)[0m
+[36m[1mDownloading[0m[39m scipy [2m(19.5MiB)[0m
+ [36m[1mDownloaded[0m[39m scikit-learn
+ [36m[1mDownloaded[0m[39m scipy
+[2mPrepared [1m6 packages[0m [2min 1.02s[0m[0m
+[2mInstalled [1m6 packages[0m [2min 38ms[0m[0m
+ [32m+[39m [1mcloudpickle[0m[2m==3.1.2[0m
+ [32m+[39m [1mjoblib[0m[2m==1.6.0[0m
+ [32m+[39m [1mnarwhals[0m[2m==2.28.0[0m
+ [32m+[39m [1mscikit-learn[0m[2m==1.9.1[0m
+ [32m+[39m [1mscipy[0m[2m==1.18.1[0m
+ [32m+[39m [1mthreadpoolctl[0m[2m==3.7.0[0m
+
+Ambiente pronto: /Users/stefanocirillo/Downloads/sdg-lab/envs/gmm_sklearn 

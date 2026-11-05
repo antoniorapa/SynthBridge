@@ -1,0 +1,27 @@
+name: "Gaussian Copula (SDV)"
+backend: python
+entry: adapter.py
+python_env: sdv            # stesso ambiente di sdv_ctgan (requirements.txt identico)
+python_version: "3.11"
+authors: ["docente"]
+reference: "https://docs.sdv.dev/sdv/single-table-data/modeling/synthesizers/gaussiancopulasynthesizer"
+description:
+  it: |
+    Copula gaussiana della libreria **SDV**: stima una distribuzione marginale
+    per ogni colonna e le lega con una matrice di correlazione. Veloce, buon
+    punto di partenza prima dei modelli profondi.
+  en: |
+    Gaussian copula from the **SDV** library: fits a marginal distribution to
+    each column and ties them together with a correlation matrix. Fast, and a
+    good starting point before deep models.
+
+params:
+  - name: default_distribution
+    label: {it: "Distribuzione delle marginali", en: "Marginal distribution"}
+    type: choice
+    choices: [beta, truncnorm, gamma, norm, uniform, gaussian_kde]
+    default: beta
+  - name: enforce_min_max_values
+    label: {it: "Rispetta min/max dei dati reali", en: "Enforce min/max of the real data"}
+    type: logical
+    default: true

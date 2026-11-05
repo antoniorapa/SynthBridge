@@ -1,0 +1,29 @@
+# Configurazione generale di SynthBridge.
+# I percorsi relativi sono relativi alla cartella del progetto.
+
+# Lingua di default dell'interfaccia: it | en.
+# Ogni utente può cambiarla dai pulsanti IT / EN in alto a destra (la scelta
+# resta salvata nel suo browser) o con l'indirizzo ...?lang=en
+language: it
+
+python:
+  # Interprete usato per CREARE gli ambienti virtuali degli algoritmi.
+  # "auto" = cerca python3 / python / py nel PATH.
+  # Altrimenti un percorso, es. "C:/Users/me/AppData/Local/Programs/Python/Python311/python.exe"
+  base_interpreter: auto
+  # Usa "uv" (molto più veloce di pip) se è installato. "auto" | "yes" | "no"
+  use_uv: auto
+  # Dove vivono gli ambienti virtuali (uno per valore di python_env).
+  envs_dir: envs
+
+# Cartella dove ogni esecuzione salva input, parametri, log e risultato.
+runs_dir: runs
+
+# Un'esecuzione che supera questo tempo viene interrotta.
+timeout_minutes: 60
+
+# Dimensione massima dei CSV caricati dall'interfaccia.
+max_upload_mb: 200
+
+# Numero massimo di righe mostrate nelle anteprime.
+preview_rows: 200

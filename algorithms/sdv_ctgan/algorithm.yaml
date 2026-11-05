@@ -1,0 +1,74 @@
+name: "CTGAN (SDV)"
+backend: python
+entry: adapter.py
+python_env: sdv            # condiviso con sdv_gaussian_copula: un solo ambiente per entrambi
+python_version: "3.11"     # rispettato quando l'ambiente è creato con uv (o con il launcher py su Windows)
+authors: ["docente"]
+reference: "https://docs.sdv.dev/sdv/single-table-data/modeling/synthesizers/ctgansynthesizer"
+description:
+  it: |
+    **CTGAN** (Xu et al., NeurIPS 2019): GAN condizionale per dati tabellari,
+    con normalizzazione mode-specific per le numeriche. Implementazione della
+    libreria **SDV**. L'addestramento può richiedere diversi minuti: per le prove
+    in aula riduci le epoche.
+  en: |
+    **CTGAN** (Xu et al., NeurIPS 2019): conditional GAN for tabular data,
+    with mode-specific normalisation of numeric columns. Implementation from
+    the **SDV** library. Training can take several minutes: for classroom
+    tests, lower the number of epochs.
+
+params:
+  - name: epochs
+    label: {it: "Epoche", en: "Epochs"}
+    type: integer
+    default: 300
+    min: 1
+    max: 10000
+  - name: batch_size
+    label: "Batch size"
+    type: integer
+    default: 500
+    min: 10
+    max: 100000
+    step: 10
+    help: {it: "Deve essere multiplo di pac (10 di default).", en: "Must be a multiple of pac (10 by default)."}
+  - name: embedding_dim
+    label: {it: "Dimensione embedding", en: "Embedding size"}
+    type: integer
+    default: 128
+    min: 2
+    advanced: true
+  - name: generator_dim
+    label: {it: "Layer del generatore", en: "Generator layers"}
+    type: integer_list
+    default: [256, 256]
+    advanced: true
+    help: {it: "Neuroni per layer, separati da virgole.", en: "Neurons per layer, separated by commas."}
+  - name: discriminator_dim
+    label: {it: "Layer del discriminatore", en: "Discriminator layers"}
+    type: integer_list
+    default: [256, 256]
+    advanced: true
+  - name: generator_lr
+    label: {it: "Learning rate generatore", en: "Generator learning rate"}
+    type: numeric
+    default: 0.0002
+    min: 0
+    advanced: true
+  - name: discriminator_lr
+    label: {it: "Learning rate discriminatore", en: "Discriminator learning rate"}
+    type: numeric
+    default: 0.0002
+    min: 0
+    advanced: true
+  - name: pac
+    label: "pac"
+    type: integer
+    default: 10
+    min: 1
+    advanced: true
+  - name: use_gpu
+    label: {it: "Usa la GPU se disponibile", en: "Use the GPU if available"}
+    type: logical
+    default: false
+    advanced: true

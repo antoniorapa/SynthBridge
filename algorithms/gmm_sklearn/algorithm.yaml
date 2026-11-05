@@ -1,0 +1,41 @@
+name: "Gaussian Mixture (scikit-learn)"
+backend: python
+entry: adapter.py
+python_env: gmm_sklearn        # cartella in envs/; algoritmi con le stesse dipendenze possono condividerla
+authors: ["docente"]
+reference: "https://scikit-learn.org/stable/modules/mixture.html"
+description:
+  it: |
+    Esempio **Python** leggero, pensato per verificare che il ponte R → Python
+    funzioni. Le categoriche sono codificate one-hot, i dati standardizzati e
+    modellati con una miscela di gaussiane; poi si campiona e si decodifica.
+  en: |
+    Lightweight **Python** example, meant to check that the R → Python bridge
+    works. Categorical columns are one-hot encoded, the data standardised and
+    modelled with a Gaussian mixture; then it samples and decodes.
+
+params:
+  - name: n_components
+    label: {it: "Numero di componenti", en: "Number of components"}
+    type: integer
+    default: 8
+    min: 1
+    max: 200
+  - name: covariance_type
+    label: {it: "Tipo di covarianza", en: "Covariance type"}
+    type: choice
+    choices: [full, tied, diag, spherical]
+    default: full
+  - name: max_iter
+    label: {it: "Iterazioni massime EM", en: "Maximum EM iterations"}
+    type: integer
+    default: 200
+    min: 10
+    max: 5000
+    advanced: true
+  - name: reg_covar
+    label: {it: "Regolarizzazione covarianza", en: "Covariance regularisation"}
+    type: numeric
+    default: 0.000001
+    min: 0
+    advanced: true

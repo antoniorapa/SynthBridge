@@ -1,0 +1,31 @@
+name: {it: "Marginali indipendenti (baseline)", en: "Independent marginals (baseline)"}
+backend: r
+entry: generate.R
+authors: ["docente"]
+description:
+  it: |
+    Baseline volutamente ingenua: campiona ogni colonna **indipendentemente**
+    dalla sua distribuzione empirica. Conserva bene le marginali ma distrugge
+    le correlazioni. Utile come termine di paragone per tutti gli altri metodi.
+  en: |
+    Deliberately naive baseline: samples each column **independently** from
+    its empirical distribution. It preserves the marginals but destroys the
+    correlations. Useful as a point of comparison for every other method.
+tags: [baseline, r]
+
+params:
+  - name: jitter
+    label: {it: "Rumore sulle numeriche", en: "Noise on numeric columns"}
+    type: numeric
+    default: 0.05
+    min: 0
+    max: 1
+    step: 0.01
+    help:
+      it: "Frazione della deviazione standard aggiunta come rumore gaussiano (0 = valori ricopiati)."
+      en: "Fraction of the standard deviation added as Gaussian noise (0 = values copied as they are)."
+  - name: keep_na
+    label: {it: "Conserva i valori mancanti", en: "Keep missing values"}
+    type: logical
+    default: true
+    help: {it: "Se falso, i NA vengono esclusi dal campionamento.", en: "If false, NAs are excluded from sampling."}

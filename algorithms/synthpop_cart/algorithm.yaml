@@ -1,0 +1,36 @@
+name: "synthpop · CART"
+backend: r
+entry: generate.R
+authors: ["docente"]
+reference: "https://www.synthpop.org.uk/"
+description:
+  it: |
+    Sintesi sequenziale con alberi di classificazione e regressione (CART),
+    dal pacchetto R **synthpop** (Nowok, Raab, Dibben, 2016). Ogni colonna è
+    generata condizionatamente a quelle che la precedono.
+  en: |
+    Sequential synthesis with classification and regression trees (CART),
+    from the R package **synthpop** (Nowok, Raab, Dibben, 2016). Each column
+    is generated conditionally on the ones before it.
+r_packages: [synthpop]
+
+params:
+  - name: method
+    label: {it: "Metodo", en: "Method"}
+    type: choice
+    choices: [cart, ctree, parametric, sample]
+    default: cart
+    help: {it: "Metodo usato per tutte le colonne (synthpop::syn, argomento method).", en: "Method used for every column (synthpop::syn, argument method)."}
+  - name: minbucket
+    label: {it: "Osservazioni minime per foglia", en: "Minimum observations per leaf"}
+    type: integer
+    default: 5
+    min: 1
+    max: 500
+    help: {it: "Solo per cart: foglie più grandi = meno rischio di copiare i dati reali.", en: "cart only: larger leaves = lower risk of copying the real data."}
+  - name: visit_reversed
+    label: {it: "Ordine inverso delle colonne", en: "Reverse column order"}
+    type: logical
+    default: false
+    advanced: true
+    help: {it: "Cambia l'ordine con cui le colonne vengono sintetizzate.", en: "Changes the order in which columns are synthesised."}

@@ -1,0 +1,38 @@
+{
+  "algorithm": "gmm_sklearn",
+  "algorithm_name": "Gaussian Mixture (scikit-learn)",
+  "dataset": "iris",
+  "entry": "adapter.py",
+  "function": "generate",
+  "n_rows": 150,
+  "seed": 42,
+  "params": {
+    "n_components": 8,
+    "covariance_type": "full",
+    "max_iter": 200,
+    "reg_covar": 1e-06
+  },
+  "schema": [
+    {
+      "name": "Sepal.Length",
+      "type": "numeric"
+    },
+    {
+      "name": "Sepal.Width",
+      "type": "numeric"
+    },
+    {
+      "name": "Petal.Length",
+      "type": "numeric"
+    },
+    {
+      "name": "Petal.Width",
+      "type": "numeric"
+    },
+    {
+      "name": "Species",
+      "type": "categorical"
+    }
+  ],
+  "created": "2026-11-05 09:58:34"
+}

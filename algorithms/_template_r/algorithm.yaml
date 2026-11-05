@@ -1,0 +1,23 @@
+# algorithm.yaml per un algoritmo scritto in R.
+# Per la spiegazione completa dei campi (anche dei testi in due lingue)
+# vedi algorithms/_template_python/algorithm.yaml
+
+name: "NOME DELL'ALGORITMO"
+backend: r
+entry: generate.R
+r_packages: []                 # pacchetti CRAN necessari, es. [synthpop, arf]
+authors: ["Nome Cognome"]
+reference: "https://link-al-paper-o-al-pacchetto"
+description:
+  it: |
+    Che cosa fa l'algoritmo, in due-tre righe.
+  en: |
+    What the algorithm does, in two or three lines.
+
+params:
+  - name: iterations
+    label: {it: "Iterazioni", en: "Iterations"}
+    type: integer
+    default: 10
+    min: 1
+    max: 1000

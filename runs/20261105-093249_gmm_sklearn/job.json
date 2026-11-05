@@ -1,0 +1,90 @@
+{
+  "algorithm": "gmm_sklearn",
+  "algorithm_name": "Gaussian Mixture (scikit-learn)",
+  "dataset": "results.csv",
+  "entry": "adapter.py",
+  "function": "generate",
+  "n_rows": 40,
+  "seed": 42,
+  "params": {
+    "n_components": 8,
+    "covariance_type": "full",
+    "max_iter": 200,
+    "reg_covar": 1e-06
+  },
+  "schema": [
+    {
+      "name": "Dataset",
+      "type": "categorical"
+    },
+    {
+      "name": "Algoritmo",
+      "type": "categorical"
+    },
+    {
+      "name": "File",
+      "type": "categorical"
+    },
+    {
+      "name": "N_Generated",
+      "type": "integer"
+    },
+    {
+      "name": "KL_mean",
+      "type": "numeric"
+    },
+    {
+      "name": "JS_mean",
+      "type": "numeric"
+    },
+    {
+      "name": "Q_multi_attr_sim",
+      "type": "numeric"
+    },
+    {
+      "name": "KS_mean",
+      "type": "numeric"
+    },
+    {
+      "name": "Chi2_mean",
+      "type": "numeric"
+    },
+    {
+      "name": "WD_mean",
+      "type": "numeric"
+    },
+    {
+      "name": "pMSE",
+      "type": "numeric"
+    },
+    {
+      "name": "MAD_mean",
+      "type": "numeric"
+    },
+    {
+      "name": "MMD",
+      "type": "numeric"
+    },
+    {
+      "name": "PCA_WD_mean",
+      "type": "numeric"
+    },
+    {
+      "name": "Moment_mean_diff",
+      "type": "numeric"
+    },
+    {
+      "name": "Moment_var_diff",
+      "type": "numeric"
+    },
+    {
+      "name": "Moment_skew_diff",
+      "type": "numeric"
+    },
+    {
+      "name": "Moment_kurt_diff",
+      "type": "numeric"
+    }
+  ],
+  "created": "2026-11-05 09:32:49"
+}

@@ -1,0 +1,4 @@
+Avvio generate() su 150 righe x 5 colonne
+[progress] 10% addestramento GMM
+[progress] 80% campionamento
+Completato: 150 righe sintetiche in 37.0s

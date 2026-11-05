@@ -1,0 +1,5 @@
+# Dipendenze Python dell'algoritmo, una per riga (come per pip).
+# pandas e numpy sono installati sempre. Fissate le versioni se il codice
+# originale lo richiede, ad esempio:
+#   torch==2.3.1
+#   git+https://github.com/autore/repository.git@v1.0

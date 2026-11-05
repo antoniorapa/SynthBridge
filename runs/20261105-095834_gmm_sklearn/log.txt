@@ -1,0 +1,4 @@
+Running generate() on 150 rows x 5 columns
+[progress] 10% addestramento GMM
+[progress] 80% campionamento
+Completed: 150 synthetic rows in 0.8s

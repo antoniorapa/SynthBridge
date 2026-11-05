@@ -1,0 +1,5 @@
+# SDV porta con sé torch (pesante: alcuni GB con CUDA).
+# Per installare solo la versione CPU di torch, PRIMA di sdv aggiungi:
+#   --extra-index-url https://download.pytorch.org/whl/cpu
+#   torch
+sdv>=1.15

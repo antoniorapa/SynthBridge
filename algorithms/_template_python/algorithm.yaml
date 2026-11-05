@@ -1,0 +1,69 @@
+# ============================================================================
+#  algorithm.yaml - descrizione dell'algoritmo per SynthBridge
+#  L'app legge questo file e costruisce da sola il form dei parametri.
+#  Dopo ogni modifica: scheda "Algoritmi" -> "Ricarica" (o tools/check_algorithms.R)
+#
+#  Testi in due lingue: name, description, label e help possono essere un
+#  testo semplice oppure una mappa per lingua, ad esempio
+#      label: {it: "Epoche", en: "Epochs"}
+#  Se manca la traduzione inglese l'interfaccia mostra quella italiana.
+# ============================================================================
+
+name: "NOME DELL'ALGORITMO"          # come appare nel menu (vale per entrambe le lingue)
+backend: python                       # python | r
+entry: adapter.py                     # file con la funzione generate()
+python_env: __ID__                    # cartella in envs/ (stesso valore = ambiente condiviso)
+# python_version: "3.11"              # facoltativo, rispettato se si usa uv
+authors: ["Nome Cognome"]
+reference: "https://link-al-paper-o-al-repository"
+description:
+  it: |
+    Due-tre righe: che cosa fa, articolo di riferimento, limiti noti.
+    Si può usare il **markdown**.
+  en: |
+    Two or three lines: what it does, reference paper, known limitations.
+    **Markdown** is allowed.
+
+# ----------------------------------------------------------------------------
+# Parametri. Ogni voce diventa un controllo nell'interfaccia e arriva alla
+# funzione generate() nel dizionario `params`, con il tipo giusto.
+#
+#   type: integer | numeric | logical | choice | string | integer_list
+#   campi: name (obbligatorio), type (obbl.), default (obbl.),
+#          label, help (testo o {it:, en:}), min, max, step, choices (per choice),
+#          advanced: true  -> finisce nella sezione "Parametri avanzati"
+# ----------------------------------------------------------------------------
+params:
+  - name: epochs
+    label: {it: "Epoche", en: "Epochs"}
+    type: integer
+    default: 100
+    min: 1
+    max: 5000
+    help: {it: "Numero di passaggi sul dataset.", en: "Number of passes over the dataset."}
+
+  - name: learning_rate
+    label: "Learning rate"
+    type: numeric
+    default: 0.001
+    min: 0
+    advanced: true
+
+  - name: model_size
+    label: {it: "Dimensione del modello", en: "Model size"}
+    type: choice
+    choices: [small, medium, large]
+    default: small
+
+  - name: hidden_layers
+    label: {it: "Layer nascosti", en: "Hidden layers"}
+    type: integer_list
+    default: [128, 128]
+    advanced: true
+    help: {it: "Interi separati da virgole.", en: "Integers separated by commas."}
+
+  - name: verbose
+    label: {it: "Log dettagliato", en: "Verbose log"}
+    type: logical
+    default: true
+    advanced: true
