@@ -1,0 +1,36 @@
+name: "GOGGLE"
+description:
+  it: "Generative Modelling with Graph Learning (ICLR 2023). Apprende congiuntamente il grafo relazionale e le dipendenze funzionali per dati tabulari."
+  en: "Generative Modelling with Graph Learning (ICLR 2023). Jointly learns the relational graph and functional dependencies for tabular data."
+backend: "python"
+parameters:
+  - name: "epochs"
+    label: {it: "Epoche di addestramento", en: "Training Epochs"}
+    type: "integer"
+    default: 10
+    min: 1
+    max: 1000
+    help: {it: "Numero di passaggi sul dataset.", en: "Number of passes over the dataset."}
+
+  - name: "batch_size"
+    label: {it: "Dimensione del Batch", en: "Batch Size"}
+    type: "integer"
+    default: 10
+    min: 2
+    max: 100
+
+  - name: "learning_rate"
+    label: {it: "Learning Rate", en: "Learning Rate"}
+    type: "numeric"
+    default: 0.01
+    min: 0.0001
+    max: 0.1
+
+  - name: "graph_lambda"
+    label: {it: "Penalità Grafo (Lambda)", en: "Graph Penalty (Lambda)"}
+    type: "numeric"
+    default: 0.01
+    min: 0.001
+    max: 0.1
+    advanced: true
+
