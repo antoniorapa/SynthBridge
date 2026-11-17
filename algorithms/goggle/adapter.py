@@ -25,10 +25,10 @@ def generate(data, n_rows, params, info):
         df_processed[col] = le.fit_transform(df_processed[col].astype(str))
         encoders[col] = le
 
-    # Riempiamo eventuali valori mancanti con 0 per evitare crash sui tensori
-    df_processed = df_processed.fillna(0)
+    # IL SILVER BULLET: Riempiamo i vuoti e forziamo tutto a numero decimale (float32)
+    df_processed = df_processed.apply(pd.to_numeric, errors='coerce').fillna(0).astype('float32')
 
-    # Creiamo il tensore per PyTorch (ora sono tutti numeri float32!)
+    # Creiamo il tensore per PyTorch (ora il contenitore è garantito come matrice numerica)
     data_tensor = torch.tensor(df_processed.values, dtype=torch.float32).to(device)
 
     from torch.utils.data import DataLoader, TensorDataset
