@@ -1,446 +1,468 @@
-import json
-import os
-import traceback
+import functools
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
-import torch
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
-
-import goggle.model.GraphInputProcessor as _gip_mod
-from goggle.model.Goggle import Goggle
-from goggle.model.GoggleLoss import GoggleLoss
-from goggle.model.RGCNConv import RGCNConv as _GoggleRGCNConv
 
 
-# ==============================================================================
-# 1. PATCH IN MEMORIA (senza toccare alcun file originale di GOGGLE)
-# ==============================================================================
-def _patched_rgcn_forward(self, x, edge_index, edge_type=None, edge_weight=None):
-    """
-    Sostituisce RGCNConv.forward in puro PyTorch (index_add), evitando
-    MessagePassing.propagate(..., edge_weight=...) su PyTorch Geometric 2.x.
-    """
-    x_l = x[0] if isinstance(x, tuple) else x
-    if x_l is None:
-        x_l = torch.arange(self.in_channels_l, device=self.weight.device)
-    x_r = x[1] if isinstance(x, tuple) else x_l
-
-    num_nodes = x_r.size(0)
-    out = torch.zeros(num_nodes, self.out_channels, device=x_r.device, dtype=x_l.dtype)
-
-    weight = self.weight
-    if self.num_bases is not None:
-        weight = (self.comp @ weight.view(self.num_bases, -1)).view(
-            self.num_relations, self.in_channels_l, self.out_channels
-        )
-
-    if edge_type is not None and edge_type.numel() > 0:
-        for rel in torch.unique(edge_type).tolist():
-            mask = edge_type == rel
-            src = edge_index[0, mask]
-            dst = edge_index[1, mask]
-            if src.numel() == 0:
-                continue
-
-            msg = x_l[src]
-            if edge_weight is not None:
-                msg = msg * edge_weight[mask].view(-1, 1)
-
-            h = torch.zeros(num_nodes, x_l.size(1), device=x_l.device, dtype=x_l.dtype)
-            h = h.index_add(0, dst, msg)
-
-            if getattr(self, "aggr", "mean") == "mean":
-                deg = torch.zeros(num_nodes, 1, device=x_l.device, dtype=x_l.dtype)
-                ones = torch.ones((dst.numel(), 1), device=x_l.device, dtype=x_l.dtype)
-                deg = deg.index_add(0, dst, ones)
-                h = h / deg.clamp(min=1.0)
-
-            out = out + (h @ weight[rel])
-
-    if self.root is not None:
-        out = out + (self.root[x_r] if x_r.dtype == torch.long else x_r @ self.root)
-
-    if self.bias is not None:
-        out = out + self.bias
-
-    return out
-
-
-def _safe_dense_to_sparse(adj):
-    """
-    Converte una matrice di adiacenza densa in formato sparso senza mutazioni
-    in-place sugli indici, evitando errori in backward() su PyTorch 2.x.
-    """
-    if adj.dim() == 3:
-        idx = adj.nonzero(as_tuple=False).t()
-        b, row, col = idx[0], idx[1], idx[2]
-        edge_attr = adj[b, row, col]
-        offset = b * adj.size(1)
-        edge_index = torch.stack([row + offset, col + offset], dim=0)
-        return edge_index, edge_attr
-    idx = adj.nonzero(as_tuple=False).t()
-    return idx, adj[idx[0], idx[1]]
-
-
-_GoggleRGCNConv.forward = _patched_rgcn_forward
-_gip_mod.dense_to_sparse = _safe_dense_to_sparse
-
-
-# ==============================================================================
-# 2. ADAPTER UNIVERSALE DEFINITIVO PER GOGGLE
-# ==============================================================================
-class GoggleAdapter:
-    def __init__(
-        self,
-        epochs: int = 50,
-        batch_size: int = 16,
-        lr: float = 5e-3,
-        threshold: float = 0.10,
-        decoder_arch: str = "het",
-        encoder_dim: int = 64,
-        decoder_dim: int = 64,
-        patience: int = 10,
-        use_graph_prior: bool = True,
-        clip_to_real_bounds: bool = True,
-        quantile_match: bool = True,
-        seed: int = 42,
-        device: str = None,
-    ):
-        self.epochs = int(epochs)
-        self.batch_size = int(batch_size)
-        self.lr = float(lr)
-        self.threshold = float(threshold)
-        self.decoder_arch = decoder_arch
-        self.encoder_dim = int(encoder_dim)
-        self.decoder_dim = int(decoder_dim)
-        self.patience = int(patience)
-        self.use_graph_prior = bool(use_graph_prior)
-        self.clip_to_real_bounds = bool(clip_to_real_bounds)
-        self.quantile_match = bool(quantile_match)
-        self.seed = int(seed)
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.columns_ = []
-        self.const_cols_ = {}
-        self.num_cols_ = []
-        self.int_cols_ = []
-        self.bin_cols_ = []
-        self.bin_probs_ = {}
-        self.cat_cols_ = []
-        self.real_bounds_ = {}
-        self.real_sorted_ = {}
-        self.num_imputer_ = None
-        self.cat_imputer_ = None
-        self.scaler_ = None
-        self.encoder_ = None
-        self.model_ = None
-
-    def _set_seed(self):
-        np.random.seed(self.seed)
-        torch.manual_seed(self.seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(self.seed)
-
-    def _prepare_input(self, df: pd.DataFrame) -> np.ndarray:
-        work = df.copy()
-        for col in list(work.columns):
-            if col.lower() in {"id", "index", "unnamed: 0"}:
-                work.drop(columns=[col], inplace=True)
-
-        self.columns_ = list(work.columns)
-        self.const_cols_ = {}
-        self.num_cols_ = []
-        self.int_cols_ = []
-        self.bin_cols_ = []
-        self.bin_probs_ = {}
-        self.cat_cols_ = []
-        self.real_bounds_ = {}
-        self.real_sorted_ = {}
-
-        for col in self.columns_:
-            s = work[col].dropna()
-            # Colonne costanti o vuote: gestite separatamente per evitare varianza nulla
-            if len(s) == 0:
-                self.const_cols_[col] = 0
-                continue
-            if s.nunique(dropna=True) <= 1:
-                self.const_cols_[col] = s.iloc[0]
-                continue
-
-            is_cat = (
-                pd.api.types.is_bool_dtype(work[col])
-                or pd.api.types.is_object_dtype(work[col])
-                or isinstance(work[col].dtype, pd.CategoricalDtype)
-            )
-            if is_cat:
-                self.cat_cols_.append(col)
-            else:
-                self.num_cols_.append(col)
-                vals_real = s.to_numpy(dtype=np.float64)
-                self.real_bounds_[col] = (float(vals_real.min()), float(vals_real.max()))
-                self.real_sorted_[col] = np.sort(vals_real)
-
-                uniq = set(np.unique(vals_real))
-                if uniq.issubset({0.0, 1.0}):
-                    self.bin_cols_.append(col)
-                    self.int_cols_.append(col)
-                    self.bin_probs_[col] = float(np.mean(vals_real))
-                elif np.all(np.isclose(vals_real % 1, 0)):
-                    self.int_cols_.append(col)
-
-        blocks = []
-        if self.num_cols_:
-            self.num_imputer_ = SimpleImputer(strategy="median")
-            num_imp = self.num_imputer_.fit_transform(work[self.num_cols_])
-            self.scaler_ = StandardScaler()
-            num_scaled = self.scaler_.fit_transform(num_imp)
-            blocks.append(num_scaled)
-
-        if self.cat_cols_:
-            self.cat_imputer_ = SimpleImputer(strategy="most_frequent")
-            cat_imp = self.cat_imputer_.fit_transform(work[self.cat_cols_].astype(str))
-            self.encoder_ = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-            cat_ohe = self.encoder_.fit_transform(cat_imp)
-            blocks.append(cat_ohe)
-
-        if not blocks:
-            return np.empty((len(work), 0), dtype=np.float32)
-        return np.hstack(blocks).astype(np.float32)
-
-    def _build_prior(self, X_proc: np.ndarray):
-        if not self.use_graph_prior or X_proc.shape[0] < 3 or X_proc.shape[1] < 2:
-            return None
-        with np.errstate(divide="ignore", invalid="ignore"):
-            corr = np.corrcoef(X_proc, rowvar=False)
-        corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
-        prior = np.abs(corr).astype(np.float32)
-        np.fill_diagonal(prior, 1.0)
-        return torch.tensor(prior, dtype=torch.float32, device=self.device)
-
-    def fit(self, df: pd.DataFrame):
-        self._set_seed()
-        X_proc = self._prepare_input(df)
-        n_rows, input_dim = X_proc.shape
-
-        if input_dim == 0:
-            self.model_ = None
-            return self
-
-        eff_batch = min(self.batch_size, max(8, n_rows // 2))
-        graph_prior = self._build_prior(X_proc)
-
-        model = None
-        used_arch = self.decoder_arch
-        for arch in [self.decoder_arch, "sage", "gcn"]:
+def _log(msg: str, info: Optional[Dict[str, Any]] = None) -> None:
+    print(msg, flush=True)
+    if isinstance(info, dict):
+        log_file = info.get("log_path") or info.get("log_file")
+        if log_file:
             try:
-                model = Goggle(
-                    input_dim=input_dim,
-                    encoder_dim=self.encoder_dim,
-                    decoder_dim=self.decoder_dim,
-                    het_encoding=(arch == "het"),
-                    threshold=self.threshold,
-                    decoder_arch=arch,
-                    graph_prior=graph_prior,
-                    device=self.device,
-                ).to(self.device)
+                p = Path(log_file)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                with open(p, "a", encoding="utf-8") as f:
+                    f.write(msg.rstrip() + "\n")
+            except Exception:
+                pass
+
+
+def _patch_dense_to_sparse(info: Optional[Dict[str, Any]] = None) -> None:
+    """Versione out-of-place di dense_to_sparse per evitare il RuntimeError in backward()."""
+    import torch
+
+    def _safe_dense_to_sparse(adj):
+        if adj.dim() == 3:
+            idx = adj.nonzero(as_tuple=False).t()
+            b, row, col = idx[0], idx[1], idx[2]
+            edge_attr = adj[b, row, col]
+            offset = b * adj.size(1)
+            return torch.stack([row + offset, col + offset], dim=0), edge_attr
+        idx = adj.nonzero(as_tuple=False).t()
+        return idx, adj[idx[0], idx[1]]
+
+    try:
+        import goggle.model.GraphInputProcessor as _gip_mod  # type: ignore
+
+        _gip_mod.dense_to_sparse = _safe_dense_to_sparse
+        _log("[GOGGLE] Patch out-of-place applicata a dense_to_sparse.", info)
+    except Exception:
+        pass
+
+
+def _fallback_msg_agg(module, edge_index, args, kwargs):
+    import torch
+
+    x = args[0] if args else kwargs.get("x")
+    ew = kwargs.get("edge_weight")
+    if ew is None and len(args) > 1 and isinstance(args[1], torch.Tensor) and args[1].ndim == 1:
+        ew = args[1]
+
+    row, col = edge_index[0], edge_index[1]
+    x_j = x.index_select(0, col)
+    msg_kw = {k: v for k, v in kwargs.items() if k not in ("edge_weight", "size")}
+    if ew is not None:
+        msg_kw["edge_weight"] = ew
+
+    try:
+        out_msg = module.message(x_j=x_j, **msg_kw)
+    except TypeError:
+        try:
+            out_msg = module.message(x_j)
+        except TypeError:
+            out_msg = x_j * ew.view(-1, 1) if ew is not None else x_j
+
+    if ew is not None and "edge_weight" not in msg_kw:
+        out_msg = out_msg * ew.view(-1, 1)
+
+    try:
+        out_agg = module.aggregate(out_msg, row, dim_size=x.size(0))
+    except TypeError:
+        out_agg = torch.zeros_like(x).index_add(0, row, out_msg)
+
+    try:
+        return module.update(out_agg)
+    except TypeError:
+        return out_agg
+
+
+def _call_propagate_safely(fn, edge_index, args, kwargs, module=None):
+    try:
+        return fn(edge_index, *args, **kwargs)
+    except (TypeError, UnboundLocalError) as exc:
+        if "edge_weight" not in str(exc):
+            raise
+        kw_clean = {k: v for k, v in kwargs.items() if k != "edge_weight"}
+        for a in (args, args[:-1] if args else ()):
+            try:
+                return fn(edge_index, *a, **kw_clean)
+            except (TypeError, UnboundLocalError):
+                continue
+        if module is not None and hasattr(module, "message") and hasattr(module, "aggregate"):
+            return _fallback_msg_agg(module, edge_index, args, kwargs)
+        raise
+
+
+def _patch_pyg(model=None, info: Optional[Dict[str, Any]] = None) -> None:
+    try:
+        from torch_geometric.nn.conv import MessagePassing  # type: ignore
+    except Exception:
+        return
+
+    if not getattr(MessagePassing, "_sb_patched", False):
+        orig = MessagePassing.propagate
+
+        @functools.wraps(orig)
+        def _guarded(self, edge_index, *args, **kwargs):
+            return _call_propagate_safely(
+                lambda ei, *a, **kw: orig(self, ei, *a, **kw),
+                edge_index,
+                args,
+                kwargs,
+                self,
+            )
+
+        MessagePassing.propagate = _guarded  # type: ignore
+        MessagePassing._sb_patched = True  # type: ignore
+        _log("[GOGGLE] Patch PyG MessagePassing.propagate applicata.", info)
+
+    if model is not None:
+        count = 0
+        for mod in model.modules():
+            if isinstance(mod, MessagePassing) and not getattr(mod.propagate, "_sb_inst", False):
+                orig_inst = mod.propagate
+
+                @functools.wraps(orig_inst)
+                def _inst(edge_index, *args, _fn=orig_inst, _m=mod, **kwargs):
+                    return _call_propagate_safely(_fn, edge_index, args, kwargs, _m)
+
+                _inst._sb_inst = True  # type: ignore
+                mod.propagate = _inst  # type: ignore
+                count += 1
+        if count:
+            _log(f"[GOGGLE] Protetti {count} layer MessagePassing nel decoder.", info)
+
+
+def _extract_loss_tensor(loss_out: Any):
+    import torch
+
+    if isinstance(loss_out, torch.Tensor):
+        return loss_out
+    if isinstance(loss_out, (tuple, list)):
+        for item in loss_out:
+            if isinstance(item, torch.Tensor) and item.requires_grad:
+                return item
+        for item in loss_out:
+            if isinstance(item, torch.Tensor):
+                return item
+    if isinstance(loss_out, dict):
+        for v in loss_out.values():
+            if isinstance(v, torch.Tensor):
+                return v
+    raise TypeError(f"Loss non valida: {type(loss_out)}")
+
+
+def _snap_calibrated(synth_vals: np.ndarray, ref_codes: np.ndarray) -> np.ndarray:
+    unique_vals, counts = np.unique(np.asarray(ref_codes, dtype=np.int64), return_counts=True)
+    if len(unique_vals) <= 1:
+        return np.full(len(synth_vals), int(unique_vals[0]) if len(unique_vals) else 0, dtype=np.int64)
+    cum_probs = np.cumsum(counts.astype(np.float64) / counts.sum())[:-1]
+    bins = np.clip(np.digitize(synth_vals, np.quantile(synth_vals, cum_probs)), 0, len(unique_vals) - 1)
+    return unique_vals[bins].astype(np.int64)
+
+
+def _prepare_input(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str], Dict[str, Any]]:
+    active_cols, const_map, col_specs, prepared = [], {}, {}, {}
+
+    for col in df.columns:
+        ser = df[col]
+        if ser.astype(str).str.match(r"^cat_-?\d+$", na=False).any():
+            num = pd.to_numeric(ser.astype(str).str.extract(r"^cat_(-?\d+)$")[0], errors="coerce")
+            valid = num.dropna().astype(int).to_numpy()
+            fb = int(pd.Series(valid).mode().iloc[0]) if len(valid) else 0
+            codes = num.fillna(fb).astype(int).to_numpy()
+            uniq = np.unique(codes)
+            if len(uniq) <= 1:
+                const_map[col] = ("cat_prefix", int(uniq[0]) if len(uniq) else fb)
+                continue
+            mu, sd = float(codes.mean()), float(codes.std()) or 1.0
+            active_cols.append(col)
+            col_specs[col] = {"kind": "cat_prefix", "raw_codes": codes, "mu": mu, "sd": sd}
+            prepared[col] = ((codes - mu) / sd).astype(np.float32)
+
+        elif not pd.api.types.is_numeric_dtype(ser):
+            s_vals = ser.fillna("__MISSING__").astype(str).to_numpy()
+            cats = sorted(np.unique(s_vals).tolist())
+            if len(cats) <= 1:
+                const_map[col] = ("labels", cats[0] if cats else "")
+                continue
+            mapping = {c: i for i, c in enumerate(cats)}
+            codes = np.array([mapping[v] for v in s_vals], dtype=np.int64)
+            mu, sd = float(codes.mean()), float(codes.std()) or 1.0
+            active_cols.append(col)
+            col_specs[col] = {"kind": "labels", "raw_codes": codes, "labels": cats, "mu": mu, "sd": sd}
+            prepared[col] = ((codes - mu) / sd).astype(np.float32)
+
+        else:
+            s_num = pd.to_numeric(ser, errors="coerce").replace([np.inf, -np.inf], np.nan)
+            valid = s_num.dropna().to_numpy(dtype=np.float64)
+            vals = s_num.fillna(float(np.median(valid)) if len(valid) else 0.0).to_numpy(dtype=np.float64)
+            if len(np.unique(vals)) <= 1:
+                const_map[col] = ("numeric", float(vals[0]) if len(vals) else 0.0)
+                continue
+            is_int = bool(np.all(np.isclose(vals, np.rint(vals))))
+            is_disc = len(np.unique(vals)) <= 10 and is_int
+            mu, sd = float(vals.mean()), float(vals.std()) or 1.0
+            active_cols.append(col)
+            col_specs[col] = {
+                "kind": "discrete_num" if is_disc else "continuous",
+                "raw_codes": np.rint(vals).astype(np.int64) if is_disc else None,
+                "min_val": float(vals.min()),
+                "max_val": float(vals.max()),
+                "is_int": is_int,
+                "mu": mu,
+                "sd": sd,
+            }
+            prepared[col] = ((vals - mu) / sd).astype(np.float32)
+
+    df_train = pd.DataFrame(prepared, index=df.index) if active_cols else pd.DataFrame(index=df.index)
+    return df_train, active_cols, {"const_map": const_map, "col_specs": col_specs}
+
+
+def _postprocess(
+    df_std: pd.DataFrame,
+    orig_cols: List[str],
+    active_cols: List[str],
+    meta: Dict[str, Any],
+) -> pd.DataFrame:
+    n_out = len(df_std)
+    out: Dict[str, Any] = {}
+
+    for col, (kind, val) in meta["const_map"].items():
+        if kind == "cat_prefix":
+            out[col] = [f"cat_{int(val)}"] * n_out
+        elif kind == "labels":
+            out[col] = [val] * n_out
+        else:
+            out[col] = np.full(n_out, float(val), dtype=np.float64)
+
+    for col in active_cols:
+        spec = meta["col_specs"][col]
+        raw = pd.to_numeric(df_std[col], errors="coerce").to_numpy(dtype=np.float64)
+        fin = raw[np.isfinite(raw)]
+        raw = np.where(np.isfinite(raw), raw, float(np.median(fin)) if len(fin) else 0.0)
+        syn_sd = float(raw.std())
+        normed = (raw - raw.mean()) / syn_sd if syn_sd > 1e-8 else (raw - raw.mean())
+        rescaled = normed * spec["sd"] + spec["mu"]
+
+        kind = spec["kind"]
+        if kind == "cat_prefix":
+            out[col] = [f"cat_{int(c)}" for c in _snap_calibrated(rescaled, spec["raw_codes"])]
+        elif kind == "labels":
+            labels = spec["labels"]
+            out[col] = [
+                labels[min(max(int(i), 0), len(labels) - 1)]
+                for i in _snap_calibrated(rescaled, spec["raw_codes"])
+            ]
+        elif kind == "discrete_num":
+            out[col] = _snap_calibrated(rescaled, spec["raw_codes"]).astype(np.float64)
+        else:
+            clipped = np.clip(rescaled, spec["min_val"], spec["max_val"])
+            out[col] = np.rint(clipped) if spec["is_int"] else clipped
+
+    df_out = pd.DataFrame(out)
+    for c in orig_cols:
+        if c not in df_out.columns:
+            df_out[c] = 0.0
+    return df_out[orig_cols]
+
+
+def _train_and_sample(
+    df_train: pd.DataFrame,
+    n_rows: int,
+    params: Dict[str, Any],
+    info: Optional[Dict[str, Any]],
+) -> pd.DataFrame:
+    import torch
+
+    if df_train.shape[1] == 0:
+        return pd.DataFrame(index=range(n_rows))
+
+    algo_dir = Path(__file__).resolve().parent
+    if str(algo_dir) not in sys.path:
+        sys.path.insert(0, str(algo_dir))
+
+    _patch_pyg(info=info)
+
+    from goggle.model.Goggle import Goggle  # type: ignore
+
+    try:
+        from goggle.model.GoggleLoss import GoggleLoss  # type: ignore
+    except Exception:
+        GoggleLoss = None
+
+    _patch_pyg(info=info)
+    _patch_dense_to_sparse(info)
+
+    seed = int(params.get("seed", 42))
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    epochs = int(params.get("epochs", params.get("n_epochs", 80)))
+    batch_size = max(1, min(int(params.get("batch_size", 64)), len(df_train)))
+    lr = float(params.get("learning_rate", params.get("lr", 5e-3)))
+    weight_decay = float(params.get("weight_decay", 1e-4))
+    graph_lambda = float(params.get("graph_lambda", 1e-2))
+    encoder_dim = int(params.get("encoder_dim", 64))
+    decoder_dim = int(params.get("decoder_dim", 64))
+    threshold = float(params.get("threshold", 0.1))
+    decoder_arch = str(params.get("decoder_arch", "het")).lower()
+    patience = int(params.get("patience", 15))
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    corr = np.abs(df_train.corr().fillna(0.0).to_numpy(dtype=np.float32))
+    np.fill_diagonal(corr, 0.0)
+    graph_prior = torch.tensor(corr, dtype=torch.float32, device=device)
+
+    model = None
+    used_arch = decoder_arch
+    for arch in ([decoder_arch] if decoder_arch == "gcn" else [decoder_arch, "gcn"]):
+        for kw in (
+            dict(
+                input_dim=df_train.shape[1],
+                encoder_dim=encoder_dim,
+                decoder_dim=decoder_dim,
+                threshold=threshold,
+                decoder_arch=arch,
+                graph_prior=graph_prior,
+                device=str(device),
+            ),
+            dict(
+                input_dim=df_train.shape[1],
+                encoder_dim=encoder_dim,
+                decoder_dim=decoder_dim,
+                threshold=threshold,
+                decoder_arch=arch,
+                device=str(device),
+            ),
+            dict(
+                input_dim=df_train.shape[1],
+                encoder_dim=encoder_dim,
+                decoder_dim=decoder_dim,
+            ),
+        ):
+            try:
+                model = Goggle(**kw).to(device)
                 used_arch = arch
                 break
             except Exception:
                 continue
+        if model is not None:
+            break
 
-        if model is None:
-            raise RuntimeError("Impossibile inizializzare il modello GOGGLE.")
+    _patch_pyg(model=model, info=info)
+    _log(
+        f"[GOGGLE] Architettura: {used_arch} ({type(model.decoder).__name__}) | "
+        f"epochs={epochs} | batch={batch_size} | lr={lr}",
+        info,
+    )
 
-        print(
-            f"--- AVVIO GOGGLE ({used_arch.upper()} | Prior: {'ATTIVO' if graph_prior is not None else 'NO'}) "
-            f"| {n_rows} righe, {input_dim} feature attive ({len(self.const_cols_)} costanti) ---",
-            flush=True,
-        )
+    x_tensor = torch.tensor(df_train.to_numpy(dtype=np.float32), dtype=torch.float32, device=device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
-        criterion = GoggleLoss()
+    criterion = None
+    if GoggleLoss is not None:
+        for kw in ({"graph_lambda": graph_lambda}, {"lam": graph_lambda}, {}):
+            try:
+                criterion = GoggleLoss(**kw)
+                break
+            except TypeError:
+                continue
 
-        tensor_x = torch.tensor(X_proc, dtype=torch.float32, device=self.device)
-        best_loss = float("inf")
-        best_state = None
-        no_improve = 0
+    best_loss, best_state, no_improve = float("inf"), None, 0
+    min_ep = min(20, max(5, epochs // 3))
+    n_samples = len(df_train)
+    t0 = time.time()
 
-        model.train()
-        for epoch in range(self.epochs):
-            perm = torch.randperm(n_rows, device=self.device)
-            epoch_losses = []
+    model.train()
+    for ep in range(epochs):
+        perm = torch.randperm(n_samples, device=device)
+        ep_loss, n_b = 0.0, 0
+        for start in range(0, n_samples, batch_size):
+            xb = x_tensor[perm[start : start + batch_size]]
+            optimizer.zero_grad()
+            x_hat, adj, mu_z, logvar_z = model(xb, ep)
+            if criterion is not None:
+                try:
+                    raw_loss = criterion(x_hat, xb, mu_z, logvar_z, adj)
+                except TypeError:
+                    raw_loss = criterion(xb, x_hat, adj, mu_z, logvar_z)
+                loss = _extract_loss_tensor(raw_loss)
+            else:
+                loss = torch.nn.functional.mse_loss(x_hat, xb)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            optimizer.step()
+            ep_loss += float(loss.detach().cpu().item())
+            n_b += 1
 
-            for start in range(0, n_rows, eff_batch):
-                batch_idx = perm[start : start + eff_batch]
-                batch_x = tensor_x[batch_idx]
+        mean_loss = ep_loss / max(1, n_b)
+        if (ep + 1) == 1 or (ep + 1) % 5 == 0 or (ep + 1) == epochs:
+            elapsed = time.time() - t0
+            _log(f"[GOGGLE] Epoca {ep + 1}/{epochs} | loss={mean_loss:.4f} | tempo={elapsed:.1f}s", info)
 
-                optimizer.zero_grad()
-                x_hat, adj, mu_z, logvar_z = model(batch_x, epoch)
-                loss_out = criterion(x_hat, batch_x, mu_z, logvar_z, adj)
-                loss = loss_out[0] if isinstance(loss_out, tuple) else loss_out
-                loss.backward()
-                optimizer.step()
-                epoch_losses.append(float(loss.detach().cpu().item()))
-
-            mean_loss = float(np.mean(epoch_losses)) if epoch_losses else float("inf")
-            if (epoch + 1) % 5 == 0 or epoch == 0:
-                pct = int(((epoch + 1) / self.epochs) * 100)
-                print(f"[progress] {pct}% Epoca {epoch + 1}/{self.epochs} - Loss: {mean_loss:.4f}", flush=True)
-
+        if np.isfinite(mean_loss):
             if mean_loss < best_loss - 1e-5:
                 best_loss = mean_loss
                 best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
                 no_improve = 0
             else:
                 no_improve += 1
-                if no_improve >= self.patience:
-                    print(f"Early stopping all'epoca {epoch + 1} (best loss: {best_loss:.4f})", flush=True)
+                if patience > 0 and no_improve >= patience and (ep + 1) >= min_ep:
+                    _log(
+                        f"[GOGGLE] Early stopping all'epoca {ep + 1}/{epochs} (best_loss={best_loss:.4f}).",
+                        info,
+                    )
                     break
 
-        if best_state is not None:
-            model.load_state_dict({k: v.to(self.device) for k, v in best_state.items()})
+    if best_state is not None:
+        model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
 
-        self.model_ = model
-        return self
-
-    def _restore_dataframe(self, synth_np: np.ndarray, n_samples: int) -> pd.DataFrame:
-        rng = np.random.default_rng(self.seed)
-        out = {}
-        pos = 0
-
-        # 1. Colonne costanti ripristinate esattamente
-        for col, const_val in self.const_cols_.items():
-            out[col] = np.full(n_samples, const_val)
-
-        # 2. Colonne numeriche (con quantile mapping / soglia calibrata)
-        if self.num_cols_:
-            n_num = len(self.num_cols_)
-            num_inv = self.scaler_.inverse_transform(synth_np[:, pos : pos + n_num])
-            pos += n_num
-
-            for j, col in enumerate(self.num_cols_):
-                vals = num_inv[:, j].astype(np.float64)
-
-                if col in self.bin_cols_:
-                    p_one = self.bin_probs_[col]
-                    tie_noise = rng.normal(0.0, 1e-12, size=n_samples)
-                    order = np.argsort(vals + tie_noise, kind="mergesort")
-                    n_ones = int(round(p_one * n_samples))
-                    bin_out = np.zeros(n_samples, dtype=int)
-                    if n_ones > 0:
-                        bin_out[order[-n_ones:]] = 1
-                    vals = bin_out
-                else:
-                    if self.quantile_match and col in self.real_sorted_:
-                        real_sorted = self.real_sorted_[col]
-                        real_grid = np.linspace(0.0, 1.0, len(real_sorted), endpoint=True)
-                        tie_noise = rng.normal(0.0, 1e-12, size=n_samples)
-                        order = np.argsort(vals + tie_noise, kind="mergesort")
-                        ranks = np.empty(n_samples, dtype=np.float64)
-                        ranks[order] = np.arange(n_samples, dtype=np.float64)
-                        u = (ranks + 0.5) / n_samples
-                        vals = np.interp(u, real_grid, real_sorted)
-
-                    if self.clip_to_real_bounds and col in self.real_bounds_:
-                        lo, hi = self.real_bounds_[col]
-                        vals = np.clip(vals, lo, hi)
-                    if col in self.int_cols_:
-                        vals = np.rint(vals).astype(int)
-
-                out[col] = vals
-
-        # 3. Colonne categoriche (argmax sui blocchi One-Hot)
-        if self.cat_cols_:
-            for col, cats in zip(self.cat_cols_, self.encoder_.categories_):
-                k = len(cats)
-                block = synth_np[:, pos : pos + k]
-                pos += k
-                idx = np.argmax(block, axis=1)
-                out[col] = np.array(cats)[idx]
-
-        df_out = pd.DataFrame(out)[self.columns_]
-
-        # Garanzia finale: zero NA
-        for col in df_out.columns:
-            if df_out[col].isna().any():
-                fill_val = (
-                    df_out[col].mode().iloc[0]
-                    if col in self.cat_cols_
-                    else df_out[col].median()
-                )
-                df_out[col] = df_out[col].fillna(fill_val)
-        return df_out
-
-    def sample(self, n_samples: int) -> pd.DataFrame:
-        n_samples = int(n_samples)
-        if self.model_ is None:
-            if self.const_cols_:
-                return self._restore_dataframe(np.empty((n_samples, 0), dtype=np.float32), n_samples)
-            raise RuntimeError("Chiama prima .fit(df) prima di .sample(n_samples).")
-
-        self.model_.eval()
-        synth_tensor = self.model_.sample(count=n_samples)
-        synth_np = synth_tensor.detach().cpu().numpy().astype(np.float32)
-        if synth_np.ndim == 1:
-            synth_np = synth_np.reshape(1, -1)
-        return self._restore_dataframe(synth_np[:n_samples], n_samples)
-
-
-# ==============================================================================
-# 3. ENTRY POINT PER SYNTHBRIDGE E USO STANDALONE
-# ==============================================================================
-def generate(data, n_rows, params=None, info=None):
-    params = params or {}
-    df_real = data if isinstance(data, pd.DataFrame) else pd.DataFrame(data)
-    n_target = int(n_rows if n_rows is not None else len(df_real))
-
-    adapter = GoggleAdapter(
-        epochs=int(params.get("epochs", 50)),
-        batch_size=int(params.get("batch_size", params.get("batch", 16))),
-        lr=float(params.get("learning_rate", params.get("lr", 5e-3))),
-        threshold=float(params.get("threshold", 0.10)),
-        decoder_arch=str(params.get("decoder_arch", "het")),
-        encoder_dim=int(params.get("encoder_dim", 64)),
-        decoder_dim=int(params.get("decoder_dim", 64)),
-        patience=int(params.get("patience", 10)),
-        use_graph_prior=bool(params.get("use_graph_prior", True)),
-        clip_to_real_bounds=bool(params.get("clip_to_real_bounds", True)),
-        quantile_match=bool(params.get("quantile_match", True)),
-        seed=int(params.get("seed", 42)),
+    _log(
+        f"[GOGGLE] Training terminato in {time.time() - t0:.1f}s. Campionamento di {n_rows} righe (chunk=128)...",
+        info,
     )
-    adapter.fit(df_real)
-    return adapter.sample(n_target)
+    model.eval()
+    chunks, rem = [], n_rows
+    while rem > 0:
+        cur = min(128, rem)
+        with torch.no_grad():
+            s = model.sample(cur)
+            arr = s.detach().cpu().numpy() if hasattr(s, "detach") else np.asarray(s)
+        chunks.append(np.asarray(arr, dtype=np.float64)[:cur])
+        rem -= cur
+
+    synth_arr = np.vstack(chunks)[:n_rows]
+    _log(f"[GOGGLE] Campionamento completato ({len(synth_arr)} righe).", info)
+    return pd.DataFrame(synth_arr, columns=df_train.columns)
 
 
-def run_synthbridge_job(run_dir: str = "runs"):
-    input_path = os.path.join(run_dir, "input.csv")
-    job_path = os.path.join(run_dir, "job.json")
-    synthetic_path = os.path.join(run_dir, "synthetic.csv")
-    status_path = os.path.join(run_dir, "status.json")
+def generate(
+    data: pd.DataFrame,
+    n_rows: int,
+    params: Optional[Dict[str, Any]] = None,
+    info: Optional[Dict[str, Any]] = None,
+) -> pd.DataFrame:
+    if params is None:
+        params = {}
+    if not isinstance(data, pd.DataFrame):
+        data = pd.DataFrame(data)
+    if data.empty:
+        raise ValueError("Il DataFrame 'data' passato a generate() è vuoto.")
 
-    try:
-        with open(job_path, "r", encoding="utf-8") as f:
-            params = json.load(f)
+    target_rows = int(n_rows) if n_rows is not None else len(data)
+    orig_cols = list(data.columns)
+    df_train, active_cols, meta = _prepare_input(data)
+    _log(
+        f"[GOGGLE] Input: {len(data)}x{len(orig_cols)} "
+        f"(attive={len(active_cols)}, costanti={len(meta['const_map'])}) -> {target_rows} righe.",
+        info,
+    )
 
-        df_real = pd.read_csv(input_path)
-        n_synth = int(params.get("n_samples", params.get("count", params.get("n_rows", len(df_real)))))
-        df_syn = generate(df_real, n_synth, params=params, info=None)
-        df_syn.to_csv(synthetic_path, index=False)
-
-        with open(status_path, "w", encoding="utf-8") as f:
-            json.dump({"status": "success", "rows": len(df_syn)}, f)
-    except Exception as exc:
-        with open(status_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {"status": "error", "message": f"{exc}\n{traceback.format_exc()}"},
-                f,
-            )
-        raise
-
-
-if __name__ == "__main__":
-    if os.path.exists(os.path.join("runs", "input.csv")) and os.path.exists(
-        os.path.join("runs", "job.json")
-    ):
-        run_synthbridge_job("runs")
+    df_synth_std = _train_and_sample(df_train, target_rows, params, info)
+    return _postprocess(df_synth_std, orig_cols, active_cols, meta)
